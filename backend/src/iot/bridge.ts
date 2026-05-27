@@ -12,16 +12,60 @@ import mqtt from "mqtt";
 import { logger } from "../lib/logger.js";
 import { persistAndSubmitUsageEvent } from "../lib/usageEvents.js";
 import { UsageUpdateSchema } from "../lib/validation.js";
+import { adminInvoke, contractQuery } from "../lib/stellar.js";
+import * as StellarSdk from "@stellar/stellar-sdk";
 
 const BROKER = process.env.MQTT_BROKER ?? "mqtt://localhost:1883";
 const TOPIC = "solargrid/meters/+/usage";
 const FLUSH_INTERVAL_MS = Number(process.env.BATCH_FLUSH_MS ?? 5_000);
-const EVENT_POLL_INTERVAL_MS = Number(process.env.EVENT_POLL_INTERVAL_MS ?? 5_000);
+const EVENT_POLL_INTERVAL_MS = Number(
+  process.env.EVENT_POLL_INTERVAL_MS ?? 5_000,
+);
+
+// Low balance webhook configuration
+const WEBHOOK_URL = process.env.PROVIDER_WEBHOOK_URL;
+const LOW_BALANCE_THRESHOLD = parseInt(
+  process.env.LOW_BALANCE_THRESHOLD ?? "1000000",
+); // 0.1 XLM in stroops
 
 interface Reading {
   meterId: string;
   units: number;
   cost: number;
+}
+
+/** Fire webhook notification when meter balance drops below threshold */
+async function checkAndNotifyLowBalance(meterId: string) {
+  if (!WEBHOOK_URL) return;
+
+  try {
+    const result = await contractQuery("get_meter", [
+      StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+    ]);
+    const meter = StellarSdk.scValToNative(result) as {
+      balance: bigint;
+      [key: string]: unknown;
+    };
+    const balance = Number(meter.balance);
+
+    if (balance <= LOW_BALANCE_THRESHOLD) {
+      await fetch(WEBHOOK_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          event: "low_balance",
+          meter_id: meterId,
+          balance,
+          threshold: LOW_BALANCE_THRESHOLD,
+          timestamp: new Date().toISOString(),
+        }),
+      });
+      logger.info({ meterId, balance }, "Low balance webhook fired");
+    }
+  } catch (err) {
+    logger.error("Low balance webhook failed", { meterId, err });
+    // Log but do not crash the bridge
+  }
 }
 
 /** Encode a batch of readings as a Soroban Vec<(Symbol, u64, i128)>. */
@@ -31,7 +75,7 @@ function encodeBatch(readings: Reading[]): StellarSdk.xdr.ScVal {
       StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
       StellarSdk.nativeToScVal(BigInt(units), { type: "u64" }),
       StellarSdk.nativeToScVal(BigInt(cost), { type: "i128" }),
-    ])
+    ]),
   );
   return StellarSdk.xdr.ScVal.scvVec(entries);
 }
@@ -50,7 +94,9 @@ function startMqttBridge() {
     const batch = pending.splice(0);
     logger.info(`Flushing batch of ${batch.length} meter update(s)`);
     try {
-      const hash = await adminInvoke("batch_update_usage", [encodeBatch(batch)]);
+      const hash = await adminInvoke("batch_update_usage", [
+        encodeBatch(batch),
+      ]);
       logger.info(`Batch recorded on-chain: ${hash}`);
     } catch (err) {
       logger.error("Batch submission error", { err });
@@ -108,6 +154,8 @@ function startMqttBridge() {
           eventId: event.id,
           txHash: event.on_chain_tx_hash,
         });
+        // Check if balance is low after usage update
+        checkAndNotifyLowBalance(meterId);
       } else {
         logger.warn("Usage event queued for retry", {
           meterId,
@@ -176,7 +224,7 @@ async function handleContractEvent(
 
     if (topics.length < 2) return;
 
-    const ns = topics[0].sym()?.toString();   // e.g. "payment" or "meter"
+    const ns = topics[0].sym()?.toString(); // e.g. "payment" or "meter"
     const name = topics[1].sym()?.toString(); // e.g. "received", "activated", "deactivated"
 
     if (!ns || !name) return;
@@ -186,7 +234,11 @@ async function handleContractEvent(
     switch (eventKey) {
       case "payment:received": {
         const data = event.value;
-        const native = StellarSdk.scValToNative(data) as [string, bigint, unknown];
+        const native = StellarSdk.scValToNative(data) as [
+          string,
+          bigint,
+          unknown,
+        ];
         const [meterId, amount] = native;
         logger.info("payment_received contract event", {
           meterId: String(meterId),
