@@ -1,0 +1,30 @@
+version: "3.8"
+
+services:
+  mqtt:
+    image: eclipse-mosquitto:2
+    ports:
+      - "1883:1883"
+      - "9001:9001"
+    volumes:
+      - ./mosquitto.conf:/mosquitto/config/mosquitto.conf
+    networks:
+      - app-network
+
+  backend:
+    build: ./backend
+    ports:
+      - "3001:3001"
+    environment:
+      - MQTT_BROKER=mqtt://mqtt:1883
+      - STELLAR_NETWORK=testnet
+    env_file:
+      - ./backend/.env
+    depends_on:
+      - mqtt
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    driver: bridge
