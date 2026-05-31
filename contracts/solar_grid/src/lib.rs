@@ -234,10 +234,7 @@ impl SolarGridContract {
         env.storage().instance().set(&METER_LIST, &global_list);
 
         // meter_registered
-        env.events().publish(
-            (symbol_short!("mtr_reg"), EVT_NS, meter_id),
-            owner,
-        );
+        env.events().publish(("meter", "registered"), (meter_id.clone(), owner.clone()));
         Ok(())
     }
 
@@ -375,10 +372,8 @@ impl SolarGridContract {
             .set(&provider_key, &provider_revenue.saturating_add(amount));
 
         // payment_received
-        env.events().publish(
-            (symbol_short!("payment"), meter_id.clone()),
-            (payer, amount),
-        );
+        // payment_received
+        env.events().publish(("meter", "payment"), (meter_id.clone(), amount, plan));
         // meter_activated
         env.events().publish(
             (symbol_short!("mtr_actv"), EVT_NS, meter_id),
@@ -519,10 +514,8 @@ impl SolarGridContract {
         env.storage().persistent().set(&key, &meter);
 
         // usage_updated
-        env.events().publish(
-            (symbol_short!("usage"), meter_id.clone()),
-            (units, cost),
-        );
+        // usage_updated
+        env.events().publish(("meter", "usage"), (meter_id.clone(), units, cost));
         // meter_deactivated — only when balance drained to zero
         if deactivated {
             env.events().publish(
@@ -1297,10 +1290,10 @@ mod tests {
         let events = env.events().all();
         let found = events.iter().any(|(_, topics, _)| {
             topics.len() >= 2
-                && topics.get(0).map(|v| sym_eq(&env, &v, symbol_short!("mtr_reg"))).unwrap_or(false)
-                && topics.get(1).map(|v| sym_eq(&env, &v, EVT_NS)).unwrap_or(false)
+                && topics.get(0).map(|v| sym_eq(&env, &v, Symbol::new(&env, "meter"))).unwrap_or(false)
+                && topics.get(1).map(|v| sym_eq(&env, &v, Symbol::new(&env, "registered"))).unwrap_or(false)
         });
-        assert!(found, "mtr_reg event not emitted");
+        assert!(found, "meter registered event not emitted");
     }
 
     #[test]
@@ -1316,7 +1309,8 @@ mod tests {
 
         let events = env.events().all();
         let has_pmt = events.iter().any(|(_, topics, _)| {
-            topics.get(0).map(|v| sym_eq(&env, &v, symbol_short!("payment"))).unwrap_or(false)
+            topics.get(0).map(|v| sym_eq(&env, &v, Symbol::new(&env, "meter"))).unwrap_or(false)
+                && topics.get(1).map(|v| sym_eq(&env, &v, Symbol::new(&env, "payment"))).unwrap_or(false)
         });
         let has_actv = events.iter().any(|(_, topics, _)| {
             topics.get(0).map(|v| sym_eq(&env, &v, symbol_short!("mtr_actv"))).unwrap_or(false)
@@ -1341,7 +1335,8 @@ mod tests {
 
         let events = env.events().all();
         let has_usg = events.iter().any(|(_, topics, _)| {
-            topics.get(0).map(|v| sym_eq(&env, &v, symbol_short!("usage"))).unwrap_or(false)
+            topics.get(0).map(|v| sym_eq(&env, &v, Symbol::new(&env, "meter"))).unwrap_or(false)
+                && topics.get(1).map(|v| sym_eq(&env, &v, Symbol::new(&env, "usage"))).unwrap_or(false)
         });
         let has_deact = events.iter().any(|(_, topics, _)| {
             topics.get(0).map(|v| sym_eq(&env, &v, symbol_short!("mtr_deact"))).unwrap_or(false)
