@@ -2,7 +2,7 @@
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, token, vec, Address, Env,
-    Map, Symbol, Vec,
+    Map, String, Symbol, Vec,
 };
 
 // ── Error types ───────────────────────────────────────────────────────────────
@@ -139,10 +139,10 @@ fn plan_duration_secs(plan: &PaymentPlan) -> u64 {
 
 #[contracttype]
 pub enum DataKey {
-    Meter(Symbol),
+    Meter(String),
     OwnerMeters(Address),
     ProviderRevenue(Address),
-    MeterBalance(Symbol),
+    MeterBalance(String),
 }
 
 // ── Event topics (contract namespace) ────────────────────────────────────────
@@ -189,7 +189,7 @@ impl SolarGridContract {
     ///   could cause downstream auth issues.
     /// - `owner` must co-sign the registration (require_auth), confirming they
     ///   consent to being the meter owner.
-    pub fn register_meter(env: Env, meter_id: Symbol, owner: Address) -> Result<(), ContractError> {
+    pub fn register_meter(env: Env, meter_id: String, owner: Address) -> Result<(), ContractError> {
         Self::require_admin(&env)?;
         let allowlist = Self::get_allowlist(env.clone())?;
         if !allowlist.contains(&owner) {
@@ -216,7 +216,7 @@ impl SolarGridContract {
 
         // Append meter_id to the owner's meter list
         let owner_key = DataKey::OwnerMeters(owner.clone());
-        let mut list: Vec<Symbol> = env
+        let mut list: Vec<String> = env
             .storage()
             .persistent()
             .get(&owner_key)
@@ -225,7 +225,7 @@ impl SolarGridContract {
         env.storage().persistent().set(&owner_key, &list);
 
         // Append meter_id to global meter registry
-        let mut global_list: Vec<Symbol> = env
+        let mut global_list: Vec<String> = env
             .storage()
             .instance()
             .get(&METER_LIST)
@@ -239,7 +239,7 @@ impl SolarGridContract {
     }
 
     /// Get all meter IDs registered under a given owner address.
-    pub fn get_meters_by_owner(env: Env, owner: Address) -> Result<Vec<Symbol>, ContractError> {
+    pub fn get_meters_by_owner(env: Env, owner: Address) -> Result<Vec<String>, ContractError> {
         let owner_key = DataKey::OwnerMeters(owner);
         Ok(env.storage()
             .persistent()
@@ -252,7 +252,7 @@ impl SolarGridContract {
     /// Used by provider dashboard to display all active meters.
     pub fn get_all_meters(env: Env) -> Result<Vec<Meter>, ContractError> {
         Self::require_admin(&env)?;
-        let meter_ids: Vec<Symbol> = env
+        let meter_ids: Vec<String> = env
             .storage()
             .instance()
             .get(&METER_LIST)
@@ -332,7 +332,7 @@ impl SolarGridContract {
     /// - `meter_activated  { meter_id }` (always, since payment activates the meter)
     pub fn make_payment(
         env: Env,
-        meter_id: Symbol,
+        meter_id: String,
         payer: Address,
         amount: i128,
         plan: PaymentPlan,
@@ -454,7 +454,7 @@ impl SolarGridContract {
     }
 
     /// Check whether a meter currently has active energy access.
-    pub fn check_access(env: Env, meter_id: Symbol) -> Result<bool, ContractError> {
+    pub fn check_access(env: Env, meter_id: String) -> Result<bool, ContractError> {
         let key = DataKey::Meter(meter_id.clone());
         let meter = Self::get_meter_or_error(&env, &key)?;
         let bal_key = DataKey::MeterBalance(meter_id);
@@ -470,7 +470,7 @@ impl SolarGridContract {
     /// - `meter_deactivated { meter_id }` (only when balance hits zero)
     pub fn update_usage(
         env: Env,
-        meter_id: Symbol,
+        meter_id: String,
         units: u64,
         cost: i128,
     ) -> Result<(), ContractError> {
@@ -527,7 +527,7 @@ impl SolarGridContract {
     }
 
     /// Get the on-chain token balance held by this contract for a specific meter.
-    pub fn get_meter_balance(env: Env, meter_id: Symbol) -> Result<i128, ContractError> {
+    pub fn get_meter_balance(env: Env, meter_id: String) -> Result<i128, ContractError> {
         if !env
             .storage()
             .persistent()
@@ -542,6 +542,9 @@ impl SolarGridContract {
     /// Get meter details.
     pub fn get_meter(env: Env, meter_id: Symbol) -> Option<Meter> {
         env.storage().persistent().get(&DataKey::Meter(meter_id))
+    pub fn get_meter(env: Env, meter_id: String) -> Result<Meter, ContractError> {
+        let key = DataKey::Meter(meter_id);
+        Self::get_meter_or_error(&env, &key)
     }
 
     /// Admin can manually toggle meter access (e.g. maintenance).
@@ -553,7 +556,7 @@ impl SolarGridContract {
     /// Emits:
     /// - `meter_activated   { meter_id }` when toggled on
     /// - `meter_deactivated { meter_id }` when toggled off
-    pub fn set_active(env: Env, meter_id: Symbol, active: bool) -> Result<(), ContractError> {
+    pub fn set_active(env: Env, meter_id: String, active: bool) -> Result<(), ContractError> {
         Self::require_admin(&env)?;
         let key = DataKey::Meter(meter_id.clone());
         let mut meter = Self::get_meter_or_error(&env, &key)?;
@@ -586,6 +589,30 @@ impl SolarGridContract {
                 (),
             );
         }
+        Ok(())
+    }
+
+    /// Admin-only: immediately deactivate a meter (e.g. for non-paying
+    /// customers or faulty meters). Unlike `set_active`, this is a one-way
+    /// deactivation that doesn't require passing a boolean flag.
+    ///
+    /// Emits:
+    /// - `meter_deactivated { meter_id }`
+    pub fn deactivate_meter(env: Env, meter_id: Symbol) -> Result<(), ContractError> {
+        Self::require_admin(&env)?;
+        let key = DataKey::Meter(meter_id.clone());
+        let mut meter = Self::get_meter_or_error(&env, &key)?;
+        meter.active = false;
+        env.storage().persistent().set(&key, &meter);
+
+        env.events().publish(
+            (symbol_short!("access"), meter_id.clone()),
+            false,
+        );
+        env.events().publish(
+            (symbol_short!("mtr_deact"), EVT_NS, meter_id),
+            (),
+        );
         Ok(())
     }
 
@@ -727,7 +754,7 @@ impl SolarGridContract {
     /// Maximum batch size is 50 meters.
     pub fn batch_update_usage(
         env: Env,
-        updates: Vec<(Symbol, u64, i128)>,
+        updates: Vec<(String, u64, i128)>,
     ) -> Result<(), ContractError> {
         Self::require_admin(&env)?;
         let oracle: Option<Address> = env.storage().instance().get(&ORACLE);
@@ -791,7 +818,7 @@ impl SolarGridContract {
 
     /// Set the daily spending limit for a meter. Admin-only.
     /// A limit of 0 means unlimited (the default for newly registered meters).
-    pub fn set_daily_limit(env: Env, meter_id: Symbol, limit: i128) -> Result<(), ContractError> {
+    pub fn set_daily_limit(env: Env, meter_id: String, limit: i128) -> Result<(), ContractError> {
         Self::require_admin(&env)?;
         if limit < 0 {
             return Err(ContractError::InvalidAmount);
@@ -805,7 +832,7 @@ impl SolarGridContract {
 
     /// Migrate a meter from v0 (LegacyMeter) to v2 (Meter) schema.
     /// Admin-only. Use migrate_meter_to_v2 for v1 → v2 migrations.
-    pub fn migrate_meter(env: Env, meter_id: Symbol) -> Result<(), ContractError> {
+    pub fn migrate_meter(env: Env, meter_id: String) -> Result<(), ContractError> {
         Self::require_admin(&env)?;
         let key = DataKey::Meter(meter_id);
         let legacy: LegacyMeter = env
@@ -819,7 +846,7 @@ impl SolarGridContract {
     }
 
     /// Migrate a meter from v1 (LegacyMeterV1) to v2 (Meter) schema. Admin-only.
-    pub fn migrate_meter_to_v2(env: Env, meter_id: Symbol) -> Result<(), ContractError> {
+    pub fn migrate_meter_to_v2(env: Env, meter_id: String) -> Result<(), ContractError> {
         Self::require_admin(&env)?;
         let key = DataKey::Meter(meter_id);
         let legacy: LegacyMeterV1 = env
@@ -865,7 +892,7 @@ mod tests {
     /// Helper: allowlist + register a meter in one call.
     fn allowlist_and_register(
         client: &SolarGridContractClient,
-        meter_id: &Symbol,
+        meter_id: &String,
         user: &Address,
     ) {
         client.allowlist_add(user);
@@ -1440,7 +1467,7 @@ mod tests {
         env: &Env,
         client: &SolarGridContractClient,
         token_address: &Address,
-        meter_id: &Symbol,
+        meter_id: &String,
         amount: i128,
     ) {
         let user = Address::generate(env);
@@ -1479,7 +1506,7 @@ mod tests {
             register_and_fund(&env, &client, &token_address, id, 10_000_i128);
         }
 
-        let mut updates: soroban_sdk::Vec<(Symbol, u64, i128)> = soroban_sdk::Vec::new(&env);
+        let mut updates: soroban_sdk::Vec<(String, u64, i128)> = soroban_sdk::Vec::new(&env);
         for id in ids.iter() {
             updates.push_back((id.clone(), 5_u64, 1_000_i128));
         }
@@ -1508,7 +1535,7 @@ mod tests {
             register_and_fund(&env, &client, &token_address, id, 5_000_i128);
         }
 
-        let mut updates: soroban_sdk::Vec<(Symbol, u64, i128)> = soroban_sdk::Vec::new(&env);
+        let mut updates: soroban_sdk::Vec<(String, u64, i128)> = soroban_sdk::Vec::new(&env);
         for id in ids.iter() {
             updates.push_back((id.clone(), 2_u64, 500_i128));
         }
@@ -1572,7 +1599,7 @@ mod tests {
         let meter_id = symbol_short!("OVER");
         register_and_fund(&env, &client, &token_address, &meter_id, 1_000_000_i128);
 
-        let mut updates: soroban_sdk::Vec<(Symbol, u64, i128)> = soroban_sdk::Vec::new(&env);
+        let mut updates: soroban_sdk::Vec<(String, u64, i128)> = soroban_sdk::Vec::new(&env);
         // Create 51 unique meter IDs using symbol_short with different names
         let ids = [
             symbol_short!("M0"), symbol_short!("M1"), symbol_short!("M2"), symbol_short!("M3"),
