@@ -78,3 +78,13 @@ export const useWalletStore = create<WalletState>((set, get) => ({
 }));
 
 export { FREIGHTER_ID, xBullWalletId };
+
+if (typeof window !== "undefined" && (window as any).freighter) {
+  (window as any).freighter.on("accountChanged", (newAddress: string | null) => {
+    if (!newAddress) {
+      useWalletStore.getState().disconnect();
+    } else {
+      useWalletStore.setState({ address: newAddress });
+    }
+  });
+}
