@@ -491,26 +491,7 @@ impl SolarGridContract {
 
         // Daily spending limit: reset window if 24 h has elapsed, then enforce cap.
         let now = env.ledger().timestamp();
-        if now.saturating_sub(meter.day_start) > SECONDS_PER_DAY {
-            meter.day_spent = 0;
-            meter.day_start = now;
-        }
-        if meter.daily_limit > 0 && meter.day_spent.saturating_add(cost) > meter.daily_limit {
-            return Err(ContractError::DailyLimitReached);
-        }
-        meter.day_spent = meter.day_spent.saturating_add(cost);
-
-        let bal_key = DataKey::MeterBalance(meter_id.clone());
-        let balance: i128 = env.storage().persistent().get(&bal_key).unwrap_or(0);
-        let new_balance = balance.saturating_sub(cost).max(0);
-        env.storage().persistent().set(&bal_key, &new_balance);
-        meter.units_used = meter.units_used.saturating_add(units);
-        let deactivated = if new_balance == 0 {
-            meter.active = false;
-            true
-        } else {
-            false
-        };
+        let deactivated = Self::apply_usage(&env, &meter_id, &mut meter, units, cost, now)?;
         env.storage().persistent().set(&key, &meter);
 
         // usage_updated
@@ -776,44 +757,57 @@ impl SolarGridContract {
             }
             let mut meter: Meter = env.storage().persistent().get(&key).unwrap();
 
-            // Daily spending limit check — skip meter if limit exceeded.
-            if now.saturating_sub(meter.day_start) > SECONDS_PER_DAY {
-                meter.day_spent = 0;
-                meter.day_start = now;
-            }
-            if meter.daily_limit > 0 && meter.day_spent.saturating_add(cost) > meter.daily_limit {
-                env.events().publish(
-                    (symbol_short!("btch_skip"), EVT_NS, meter_id.clone()),
-                    (),
-                );
-                continue;
-            }
-            meter.day_spent = meter.day_spent.saturating_add(cost);
-
-            let bal_key = DataKey::MeterBalance(meter_id.clone());
-            let balance: i128 = env.storage().persistent().get(&bal_key).unwrap_or(0);
-            let new_balance = balance.saturating_sub(cost).max(0);
-            env.storage().persistent().set(&bal_key, &new_balance);
-            meter.units_used = meter.units_used.saturating_add(units);
-            let deactivated = if new_balance == 0 {
-                meter.active = false;
-                true
-            } else {
-                false
-            };
-            env.storage().persistent().set(&key, &meter);
-            env.events().publish(
-                (symbol_short!("usg_upd"), EVT_NS, meter_id.clone()),
-                (units, cost),
-            );
-            if deactivated {
-                env.events().publish(
-                    (symbol_short!("mtr_deact"), EVT_NS, meter_id.clone()),
-                    (),
-                );
+            match Self::apply_usage(&env, meter_id, &mut meter, *units, *cost, now) {
+                Ok(deactivated) => {
+                    env.storage().persistent().set(&key, &meter);
+                    env.events().publish(
+                        (symbol_short!("usg_upd"), EVT_NS, meter_id.clone()),
+                        (*units, *cost),
+                    );
+                    if deactivated {
+                        env.events().publish(
+                            (symbol_short!("mtr_deact"), EVT_NS, meter_id.clone()),
+                            (),
+                        );
+                    }
+                }
+                Err(_) => {
+                    env.events().publish(
+                        (symbol_short!("btch_skip"), EVT_NS, meter_id.clone()),
+                        (),
+                    );
+                }
             }
         }
         Ok(())
+    }
+
+    fn apply_usage(
+        env: &Env,
+        meter_id: &String,
+        meter: &mut Meter,
+        units: u64,
+        cost: i128,
+        now: u64,
+    ) -> Result<bool, ContractError> {
+        if now.saturating_sub(meter.day_start) > SECONDS_PER_DAY {
+            meter.day_spent = 0;
+            meter.day_start = now;
+        }
+        if meter.daily_limit > 0 && meter.day_spent.saturating_add(cost) > meter.daily_limit {
+            return Err(ContractError::DailyLimitReached);
+        }
+        meter.day_spent = meter.day_spent.saturating_add(cost);
+        let bal_key = DataKey::MeterBalance(meter_id.clone());
+        let balance: i128 = env.storage().persistent().get(&bal_key).unwrap_or(0);
+        let new_balance = balance.saturating_sub(cost).max(0);
+        env.storage().persistent().set(&bal_key, &new_balance);
+        meter.units_used = meter.units_used.saturating_add(units);
+        let deactivated = new_balance == 0;
+        if deactivated {
+            meter.active = false;
+        }
+        Ok(deactivated)
     }
 
     /// Set the daily spending limit for a meter. Admin-only.
