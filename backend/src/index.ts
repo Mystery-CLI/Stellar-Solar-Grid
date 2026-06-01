@@ -2,6 +2,7 @@ import "dotenv/config";
 import express from "express";
 import timeout from "connect-timeout";
 import { NextFunction, Request, Response } from "express";
+import cors from "cors";
 import mqtt from "mqtt";
 import { stellarService, server } from "./lib/stellar.js";
 import { createMeterRouter } from "./routes/meters.js";
