@@ -1,6 +1,6 @@
 import { Router } from "express";
 import * as StellarSdk from "@stellar/stellar-sdk";
-import { StellarService, stellarService, adminInvoke, contractQuery } from "../lib/stellar.js";
+import { StellarService, stellarService } from "../lib/stellar.js";
 import {
   getUsageHistory,
   persistAndSubmitUsageEvent,
@@ -8,119 +8,33 @@ import {
 import { asyncHandler } from "../lib/asyncHandler.js";
 import { validateRequest, RegisterMeterSchema } from "../lib/validation.js";
 
-export const meterRouter = Router();
-
-/** GET /api/meters/export?format=csv|json — download all meter data */
-meterRouter.get(
-  "/export",
-  asyncHandler(async (req, res) => {
-    const format = req.query.format === "json" ? "json" : "csv";
-    const result = await contractQuery("get_all_meters", []);
-    const meters = (StellarSdk.scValToNative(result) as any[]) ?? [];
-
-    if (format === "json") {
-      res.setHeader("Content-Disposition", "attachment; filename=meters.json");
-      return res.json(meters);
-    }
-
-    const header = "owner,active,units_used,plan,last_payment,expires_at,daily_limit";
-    const rows = meters.map((m: any) =>
-      [m.owner, m.active, m.units_used, m.plan, m.last_payment, m.expires_at, m.daily_limit].join(",")
-    );
-    res.setHeader("Content-Type", "text/csv");
-    res.setHeader("Content-Disposition", "attachment; filename=meters.csv");
-    return res.send([header, ...rows].join("\n"));
-  }),
-);
-
-/** GET /api/meters/:id — get meter status */
-meterRouter.get(
-  "/:id",
-  asyncHandler(async (req, res) => {
-    const result = await contractQuery("get_meter", [
-      StellarSdk.nativeToScVal(req.params.id, { type: "symbol" }),
-    ]);
-    res.json({ meter: StellarSdk.scValToNative(result) });
-  }),
-);
-
-/** GET /api/meters/:id/access — check if meter is active */
-meterRouter.get(
-  "/:id/access",
-  asyncHandler(async (req, res) => {
-    const result = await contractQuery("check_access", [
-      StellarSdk.nativeToScVal(req.params.id, { type: "symbol" }),
-    ]);
-    res.json({ active: StellarSdk.scValToNative(result) });
-  }),
-);
-
-/** POST /api/meters/:id/deactivate — admin manually deactivates a meter */
-meterRouter.post(
-  "/:id/deactivate",
-  asyncHandler(async (req, res) => {
-    const meterId = req.params.id;
-
-    // Verify meter exists first
-    try {
-      await contractQuery("get_meter", [
-        StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
-      ]);
-    } catch {
-      return res.status(404).json({ error: "Meter not found" });
-    }
-
-    try {
-      const txHash = await adminInvoke("deactivate_meter", [
-        StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
-      ]);
-      res.json({ success: true, tx_hash: txHash, meter_id: meterId });
-    } catch (err: any) {
-      res.status(500).json({ error: err.message });
-    }
-  }),
-);
-
-/** GET /api/meters/:id/balance — live balance for a single meter */
 const balanceCache = new Map<string, { data: any; ts: number }>();
 const BALANCE_CACHE_TTL_MS = 5_000; // 5-second cache to reduce RPC load
 
-meterRouter.get(
-  "/:id/balance",
-  asyncHandler(async (req, res) => {
-    const meterId = req.params.id;
+export function createMeterRouter(stellar: StellarService) {
+  const meterRouter = Router();
 
-    // Check cache first
-    const cached = balanceCache.get(meterId);
-    if (cached && Date.now() - cached.ts < BALANCE_CACHE_TTL_MS) {
-      return res.json(cached.data);
-    }
+  /** GET /api/meters/export?format=csv|json — download all meter data */
+  meterRouter.get(
+    "/export",
+    asyncHandler(async (req, res) => {
+      const format = req.query.format === "json" ? "json" : "csv";
+      const result = await stellar.query("get_all_meters", []);
+      const meters = (StellarSdk.scValToNative(result) as any[]) ?? [];
 
-    try {
-      const result = await contractQuery("get_meter", [
-        StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
-      ]);
-      const meter = StellarSdk.scValToNative(result) as any;
-      const payload = {
-        meter_id: meterId,
-        balance: meter.balance,
-        units_used: meter.units_used,
-        active: meter.active,
-      };
-      balanceCache.set(meterId, { data: payload, ts: Date.now() });
-      res.json(payload);
-    } catch (err: any) {
-      res.status(404).json({ error: "Meter not found" });
-    }
-  }),
-);
+      if (format === "json") {
+        res.setHeader("Content-Disposition", "attachment; filename=meters.json");
+        return res.json(meters);
+      }
 
-/** GET /api/meters/:id/history — paginated local usage history */
-meterRouter.get("/:id/history", (req, res) => {
-  const page = Math.max(1, Number(req.query.page ?? 1) || 1);
-  const pageSize = Math.min(
-    100,
-    Math.max(1, Number(req.query.pageSize ?? 25) || 25),
+      const header = "owner,active,units_used,plan,last_payment,expires_at,daily_limit";
+      const rows = meters.map((m: any) =>
+        [m.owner, m.active, m.units_used, m.plan, m.last_payment, m.expires_at, m.daily_limit].join(",")
+      );
+      res.setHeader("Content-Type", "text/csv");
+      res.setHeader("Content-Disposition", "attachment; filename=meters.csv");
+      return res.send([header, ...rows].join("\n"));
+    }),
   );
 
   /** GET /api/meters/:id — get meter status */
@@ -142,6 +56,63 @@ meterRouter.get("/:id/history", (req, res) => {
         StellarSdk.nativeToScVal(req.params.id, { type: "symbol" }),
       ]);
       res.json({ active: StellarSdk.scValToNative(result) });
+    }),
+  );
+
+  /** POST /api/meters/:id/deactivate — admin manually deactivates a meter */
+  meterRouter.post(
+    "/:id/deactivate",
+    asyncHandler(async (req, res) => {
+      const meterId = req.params.id;
+
+      // Verify meter exists first
+      try {
+        await stellar.query("get_meter", [
+          StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+        ]);
+      } catch {
+        return res.status(404).json({ error: "Meter not found" });
+      }
+
+      try {
+        const txHash = await stellar.invoke("deactivate_meter", [
+          StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+        ]);
+        res.json({ success: true, tx_hash: txHash, meter_id: meterId });
+      } catch (err: any) {
+        res.status(500).json({ error: err.message });
+      }
+    }),
+  );
+
+  /** GET /api/meters/:id/balance — live balance for a single meter */
+  meterRouter.get(
+    "/:id/balance",
+    asyncHandler(async (req, res) => {
+      const meterId = req.params.id;
+
+      // Check cache first
+      const cached = balanceCache.get(meterId);
+      if (cached && Date.now() - cached.ts < BALANCE_CACHE_TTL_MS) {
+        return res.json(cached.data);
+      }
+
+      try {
+        const result = await stellar.query("get_meter", [
+          StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+        ]);
+        const meter = StellarSdk.scValToNative(result) as any;
+        const payload = {
+          meter_id: meterId,
+          balance: meter.balance,
+          units_used: meter.units_used,
+          active: meter.active,
+        };
+        balanceCache.set(meterId, { data: payload, ts: Date.now() });
+        res.json(payload);
+      } catch (err: any) {
+        res.status(404).json({ error: "Meter not found" });
+      }
     }),
   );
 
@@ -232,4 +203,4 @@ meterRouter.get("/:id/history", (req, res) => {
 }
 
 // Default export for back-compat with index.ts
-export const meterRouter = createMeterRouter();
+export const meterRouter = createMeterRouter(stellarService);
