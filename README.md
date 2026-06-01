@@ -110,13 +110,24 @@ You can spin up the local infrastructure (MQTT broker and the backend service) u
    ```bash
    cp .env.example .env
    ```
-2. Populate the `.env` file with your `CONTRACT_ID`, `ADMIN_SECRET_KEY`, and `VITE_CONTRACT_ID`.
+2. Populate the `.env` file — at minimum set `CONTRACT_ID`, `ADMIN_SECRET_KEY`, `ADMIN_ADDRESS`, and `VITE_CONTRACT_ID`. Every variable is documented with an inline comment in `.env.example`.
 3. Start the services:
    ```bash
    docker compose up --build
    ```
 
 The `env-check` service validates that all required environment variables are correctly populated before the backend starts up, preventing silent configuration errors.
+
+### Observability
+
+You can run the Prometheus and Grafana observability stack alongside the backend and MQTT services using the `observability` profile:
+
+```bash
+docker compose --profile observability up --build
+```
+
+- **Prometheus** scrapes the backend metrics (`/metrics`) every 15 seconds, and is accessible at `http://localhost:9090`.
+- **Grafana** is preconfigured with the Prometheus datasource and is accessible at `http://localhost:3000` (default credentials: `admin` / `admin`). It features dashboard panels for MQTT messages/min, contract calls by method/status, and error rates.
 
 ## Smart Contract Overview
 
