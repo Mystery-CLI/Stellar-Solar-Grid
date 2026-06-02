@@ -1,10 +1,8 @@
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
-import { meterRouter } from "./routes/meters.js";
 import timeout from "connect-timeout";
 import { NextFunction, Request, Response } from "express";
-import cors from "cors";
 import mqtt from "mqtt";
 import { stellarService, server } from "./lib/stellar.js";
 import { createMeterRouter } from "./routes/meters.js";
@@ -68,11 +66,6 @@ app.use(
 );
 
 app.use(requestLogger);
-app.use((_, res, next) => {
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Admin-Key");
-  next();
-});
 
 // Request timeout — configurable via REQUEST_TIMEOUT env var (default 15s)
 const requestTimeout = process.env.REQUEST_TIMEOUT ?? '15s';

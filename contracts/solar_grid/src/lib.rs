@@ -536,8 +536,6 @@ impl SolarGridContract {
     }
 
     /// Get meter details.
-    pub fn get_meter(env: Env, meter_id: Symbol) -> Option<Meter> {
-        env.storage().persistent().get(&DataKey::Meter(meter_id))
     pub fn get_meter(env: Env, meter_id: String) -> Result<Meter, ContractError> {
         let key = DataKey::Meter(meter_id);
         Self::get_meter_or_error(&env, &key)
